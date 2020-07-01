@@ -1,91 +1,111 @@
 import datetime
 from multiprocessing import Process, Queue
 import sys
+import pickle
 
 
-def aggregator(queue, filename, file_flag):
-    def get_email_date(line, date_start_ix):
-        email_date = line[date_start_ix:]
-        return datetime.datetime.strptime((email_date.strip()), '%a %b %d %H:%M:%S %z %Y')
+def get_email_date(_line, _date_start_ix):
+    _email_date = _line[_date_start_ix:]
+    return datetime.datetime.strptime((_email_date.strip()), '%a %b %d %H:%M:%S %z %Y')
 
-    aggregate = {}
+
+def get_message_ids_time_set(queue, filename, _file_flag):
+    message_ids_time_set = set()
     message_id_ix = 11
-    message_id = 'Message-ID: '
+    message_id_label = 'Message-ID'
     date_start_ix = 29
-    with open(filename, file_flag) as f:
-        key = None
-        email = []
+    email_begin_label = 'From '
+    email_begin_label_last_ix = len(email_begin_label)
+    with open(filename, _file_flag) as f:
         email_date = None
-        for line in f.readlines():
+        for line in f:
             try:
                 line_ascii = line.decode('ascii')
             except UnicodeDecodeError:
-                email.append(line)
+                continue
             else:
-                if line_ascii[:5] == 'From ':
-                    if len(email) == 0:
-                        email_date = get_email_date(line_ascii, date_start_ix)
+                if line_ascii.startswith(message_id_label):
+                    msg_id = line_ascii[message_id_ix:].strip()
+                    message_ids_time_set.add(msg_id)
+    print('got message ids and corresponding dates for ', filename)
+    queue.put(message_ids_time_set)
+
+
+def collect_missing_emails(orig_mbox, pickle_file, out_mbox_name):
+    message_id_ix = 11
+    message_id_label = 'Message-ID'
+    email_begin_label = 'From '
+    email_begin_label_last_ix = len(email_begin_label)
+    with open(pickle_file, 'rb') as f:
+        missing_msg_ids_set = pickle.load(f)
+
+    email_body = []
+    with open(orig_mbox, 'rb') as f:
+        with open(out_mbox_name, 'wb') as om:
+            msg_id = None
+            for line in f:
+                try:
+                    line_ascii = line.decode('ascii')
+                except UnicodeDecodeError:
+                    email_body.append(line)
+                else:
+                    if line_ascii.startswith(message_id_label):
+                        msg_id = line_ascii[message_id_ix:].strip()
+                        email_body.append(line)
+                    elif line_ascii[:email_begin_label_last_ix] == email_begin_label and len(email_body) == 0:
+                        email_body.append(line)
+                    elif line_ascii[:email_begin_label_last_ix] == email_begin_label and len(email_body) and msg_id is\
+                            not None:
+                        if msg_id in missing_msg_ids_set:
+                            om.writelines(email_body)
+                            print('wrote email for Message-ID ', msg_id)
+                            email_body = []
+                            msg_id = None
+                        else:
+                            msg_id = None
+                            email_body = []
                     else:
-                        aggregate[key] = {
-                            'email': email[:],
-                            'email_date': email_date
-                        }
-                        key = None
-                        email_date = get_email_date(line_ascii, date_start_ix)
-                        email = []
-                elif line_ascii.startswith(message_id):
-                    key = line_ascii[message_id_ix:].strip()
-                    aggregate[key] = {}
-                email.append(line)
+                        email_body.append(line)
 
-    print(filename, ' aggregated')
-    queue.put(aggregate)
-    return
 
-def migrate_missing(original_email_mbox, migrated_email_mbox, out_mbox_name, file_flag='rb'):
-    original_email_aggr_queue = Queue()
-    migrated_email_aggr_queue = Queue()
-    original_email_aggr_process = Process(target=aggregator, args=(original_email_aggr_queue,
-                                                               original_email_mbox,
-                                                               file_flag)
-                                          )
-    migrated_email_aggr_process = Process(target=aggregator, args=(migrated_email_aggr_queue,
-                                                               migrated_email_mbox,
-                                                               file_flag)
-                                          )
-    original_email_aggr_process.start()
-    migrated_email_aggr_process.start()
-    original_email_aggr = original_email_aggr_queue.get()
-    migrated_email_aggr = migrated_email_aggr_queue.get()
+def migrate_missing(original_email_mbox, migrated_email_mbox, out_mbox_name, pickled_filename,
+                    _file_flag='rb', pickle_file=None):
+    if pickle_file is not None:
+        return collect_missing_emails(original_email_mbox, pickle_file, out_mbox_name)
 
-    message_ids_not_migrated = set(original_email_aggr.keys()).difference(set(migrated_email_aggr.keys()))
-    emails_to_migrate = [original_email_aggr[msg_id] for msg_id in message_ids_not_migrated]
-    emails_to_migrate = list(filter(lambda obj: len(list(obj.keys())) != 0, emails_to_migrate))
-    print(len(emails_to_migrate), ' emails were missed out during migration')
-    print('sorting emails according to date')
-    for email in emails_to_migrate:
-        print(email['email_date'])
-        break
-    sorted_emails_to_migrate = sorted(emails_to_migrate, key=lambda i: i['email_date'])
-    if len(sorted_emails_to_migrate):
-        with open(out_mbox_name, 'wb') as f:
-            for obj in sorted_emails_to_migrate:
-                if len(list(obj.keys())) == 0:
-                    print(obj)
+    original_email_process_queue = Queue()
+    migrated_email_process_queue = Queue()
 
-                f.writelines(obj['email'])
+    orig_email_process = Process(target=get_message_ids_time_set, args=(original_email_process_queue,
+                                                                        original_email_mbox,
+                                                                        _file_flag))
+    migrated_email_process = Process(target=get_message_ids_time_set, args=(migrated_email_process_queue,
+                                                                        migrated_email_mbox,
+                                                                        _file_flag))
+    orig_email_process.start()
+    migrated_email_process.start()
 
-        print('process complete.', len(sorted_emails_to_migrate), ' migrated. Kindly check ', out_mbox_name)
-    else:
-        print('No emails required to migrate')
+    orig_msg_ids_time_set = original_email_process_queue.get()
+    mig_msg_ids_time_set = migrated_email_process_queue.get()
+
+    missed_emails = orig_msg_ids_time_set.difference(mig_msg_ids_time_set)
+    print(len(missed_emails), ' failed to migrate')
+    with open(pickled_filename, 'wb') as f:
+        pickle.dump(missed_emails, f)
+    collect_missing_emails(original_email_mbox, pickled_filename, out_mbox_name)
 
 
 if __name__ == '__main__':
     original_mbox = sys.argv[1]
     migrated_mbox = sys.argv[2]
     out_mbox = sys.argv[3]
+    pickled_filename = sys.argv[4]
     try:
-        file_flag = sys.argv[4]
+        file_flag = sys.argv[5]
     except IndexError:
-        file_flag = None
-    migrate_missing(original_mbox, migrated_mbox, out_mbox, file_flag)
+        file_flag = 'rb'
+    try:
+        pickle_file = sys.argv[6]
+    except IndexError:
+        pickle_file = None
+    migrate_missing(original_mbox, migrated_mbox, out_mbox, pickled_filename, file_flag, pickle_file)
