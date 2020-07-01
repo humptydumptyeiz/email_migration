@@ -4,20 +4,11 @@ import sys
 import pickle
 
 
-def get_email_date(_line, _date_start_ix):
-    _email_date = _line[_date_start_ix:]
-    return datetime.datetime.strptime((_email_date.strip()), '%a %b %d %H:%M:%S %z %Y')
-
-
 def get_message_ids_time_set(queue, filename, _file_flag):
     message_ids_time_set = set()
     message_id_ix = 11
     message_id_label = 'Message-ID'
-    date_start_ix = 29
-    email_begin_label = 'From '
-    email_begin_label_last_ix = len(email_begin_label)
     with open(filename, _file_flag) as f:
-        email_date = None
         for line in f:
             try:
                 line_ascii = line.decode('ascii')
