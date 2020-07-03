@@ -1,10 +1,8 @@
-import datetime
 from multiprocessing import Process, Queue
 import sys
-import pickle
 
 
-def get_message_ids_time_set(queue, filename, _file_flag):
+def get_message_ids_set(queue, filename, _file_flag):
     message_ids_time_set = set()
     message_id_ix = 11
     message_id_label = 'Message-ID'
@@ -22,13 +20,11 @@ def get_message_ids_time_set(queue, filename, _file_flag):
     queue.put(message_ids_time_set)
 
 
-def collect_missing_emails(orig_mbox, pickle_file, out_mbox_name):
+def collect_missing_emails(orig_mbox, missed_emails, out_mbox_name):
     message_id_ix = 11
     message_id_label = 'Message-ID'
     email_begin_label = 'From '
     email_begin_label_last_ix = len(email_begin_label)
-    with open(pickle_file, 'rb') as f:
-        missing_msg_ids_set = pickle.load(f)
 
     email_body = []
     with open(orig_mbox, 'rb') as f:
@@ -47,7 +43,7 @@ def collect_missing_emails(orig_mbox, pickle_file, out_mbox_name):
                         email_body.append(line)
                     elif line_ascii[:email_begin_label_last_ix] == email_begin_label and len(email_body) and msg_id is\
                             not None:
-                        if msg_id in missing_msg_ids_set:
+                        if msg_id in missed_emails:
                             om.writelines(email_body)
                             print('wrote email for Message-ID ', msg_id)
                             email_body = []
@@ -59,18 +55,15 @@ def collect_missing_emails(orig_mbox, pickle_file, out_mbox_name):
                         email_body.append(line)
 
 
-def migrate_missing(original_email_mbox, migrated_email_mbox, out_mbox_name, pickled_filename,
-                    _file_flag='rb', pickle_file=None):
-    if pickle_file is not None:
-        return collect_missing_emails(original_email_mbox, pickle_file, out_mbox_name)
+def migrate_missing(original_email_mbox, migrated_email_mbox, out_mbox_name, _file_flag='rb'):
 
     original_email_process_queue = Queue()
     migrated_email_process_queue = Queue()
 
-    orig_email_process = Process(target=get_message_ids_time_set, args=(original_email_process_queue,
+    orig_email_process = Process(target=get_message_ids_set, args=(original_email_process_queue,
                                                                         original_email_mbox,
                                                                         _file_flag))
-    migrated_email_process = Process(target=get_message_ids_time_set, args=(migrated_email_process_queue,
+    migrated_email_process = Process(target=get_message_ids_set, args=(migrated_email_process_queue,
                                                                         migrated_email_mbox,
                                                                         _file_flag))
     orig_email_process.start()
@@ -81,22 +74,16 @@ def migrate_missing(original_email_mbox, migrated_email_mbox, out_mbox_name, pic
 
     missed_emails = orig_msg_ids_time_set.difference(mig_msg_ids_time_set)
     print(len(missed_emails), ' failed to migrate')
-    with open(pickled_filename, 'wb') as f:
-        pickle.dump(missed_emails, f)
-    collect_missing_emails(original_email_mbox, pickled_filename, out_mbox_name)
+    collect_missing_emails(original_email_mbox, missed_emails, out_mbox_name)
 
 
 if __name__ == '__main__':
     original_mbox = sys.argv[1]
     migrated_mbox = sys.argv[2]
     out_mbox = sys.argv[3]
-    pickled_filename = sys.argv[4]
     try:
-        file_flag = sys.argv[5]
+        file_flag = sys.argv[4]
     except IndexError:
         file_flag = 'rb'
-    try:
-        pickle_file = sys.argv[6]
-    except IndexError:
-        pickle_file = None
-    migrate_missing(original_mbox, migrated_mbox, out_mbox, pickled_filename, file_flag, pickle_file)
+
+    migrate_missing(original_mbox, migrated_mbox, out_mbox, file_flag)
